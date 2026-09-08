@@ -19,7 +19,7 @@ jobs:
 
       - name: Creating Procfile
         run: |
-          echo "web: python3 main.py" > Procfile
+          echo "web: python3 web.py" > Procfile
 
       - name: Creating Image
         run: |
