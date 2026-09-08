@@ -1,0 +1,92 @@
+name: Creating Dockerfile
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Copy files to runner
+        uses: actions/checkout@v4
+
+      - name: Downloading Pack
+        run: |
+          sudo add-apt-repository ppa:cncf-buildpacks/pack-cli
+          sudo apt-get update
+          sudo apt-get install -y pack-cli
+
+      - name: Creating Procfile
+        run: |
+          echo "web: python3 main.py" > Procfile
+
+      - name: Creating Image
+        run: |
+          cd $GITHUB_WORKSPACE
+          pack build ghcr.io/vahe-sa/app:latest --builder paketobuildpacks/builder-jammy-base
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: vahe-sa
+          password: ${{ secrets.token }}
+
+      - name: Pushing Image
+        run: |
+          docker push ghcr.io/vahe-sa/app:latest
+
+      - name: Create or update Argo CD manifest
+        env:
+          GH_TOKEN: ${{ secrets.token }}
+        run: |
+          MANIFEST_REPO="app-manifest"
+          OWNER="${{ github.repository_owner }}"
+
+          echo "Checking manifest repository..."
+          echo "Owner: $OWNER"
+          echo "Manifest repository: $MANIFEST_REPO"
+
+          if gh repo view "$OWNER/$MANIFEST_REPO" >/dev/null 2>&1; then
+            echo "Manifest repository already exists."
+          else
+            echo "Manifest repository does not exist."
+            echo "Creating manifest repository..."
+
+            gh repo create "$OWNER/$MANIFEST_REPO"               --public               --description "Argo CD Kubernetes manifests"
+
+            echo "Manifest repository created."
+          fi
+
+          rm -rf manifest-repo
+
+          echo "Cloning manifest repository..."
+
+          git clone             "https://x-access-token:${GH_TOKEN}@github.com/$OWNER/$MANIFEST_REPO.git"             manifest-repo
+
+          cd manifest-repo
+
+          echo "Creating deployment.yaml..."
+
+          printf '%s\n'             'apiVersion: apps/v1'             'kind: Deployment'             ''             'metadata:'             '  name: my-app'             '  namespace: default'             ''             'spec:'             '  replicas: 1'             ''             '  selector:'             '    matchLabels:'             '      app: my-app'             ''             '  template:'             '    metadata:'             '      labels:'             '        app: my-app'             ''             '    spec:'             '      imagePullSecrets:'             '        - name: ghcr-secret'             ''             '      containers:'             '        - name: my-app'             "          image: ghcr.io/$OWNER/app:latest" 	    "          ports:"             "            - containerPort: 8088"             ''             '---'             'apiVersion: v1'             'kind: Service'             'metadata:'             '  name: my-app-service'             '  namespace: default'             ''             'spec:'             '  type: LoadBalancer'             '  selector:'             '    app: my-app'             '  ports:'             '    - protocol: TCP'             '      port: 80'             "      targetPort: 8088"             > deployment.yaml
+
+          echo "Configuring Git..."
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add deployment.yaml
+
+          if git diff --cached --quiet; then
+            echo "Manifest is already up to date."
+          else
+            echo "Changes detected."
+
+            git commit -m "Update Argo CD manifest"
+
+            git push
+
+            echo "Manifest uploaded successfully."
+          fi
+
